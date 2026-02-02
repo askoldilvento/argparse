@@ -58,7 +58,6 @@
 namespace argparse {
 class Args;
 using std::cout, std::cerr, std::setw;
-using std::cerr, std::endl;
 
 template<typename T> struct is_vector: public std::false_type {};
 template<typename T, typename A> struct is_vector<std::vector<T, A>>: public std::true_type {};
@@ -285,7 +284,7 @@ private:
     bool _is_multi_argument{};
     bool _is_set_by_user{true};
 
-    [[nodiscard]] std::string _get_keys() const {
+    [[nodiscard]] auto _get_keys() const {
         std::stringstream ss;
         for (size_t i = 0; i < _keys.size(); i++)
             ss << (i? ",": "") << (type == ARG? "": (_keys[i].size() > 1 ? "--": "-")) + _keys[i];
@@ -316,10 +315,10 @@ private:
     }
 
     [[nodiscard]] std::string _info() const {
-        const std::string allowed_entries = _datap->get_allowed_entries();
-        const std::string default_value = _default_str .has_value() ? "default: " + *_default_str : "required";
-        const std::string implicit_value = _implicit_value.has_value() ? "implicit: \"" + *_implicit_value + "\", ": "";
-        const std::string allowed_value = !allowed_entries.empty()? "allowed: <" + allowed_entries.substr(0, allowed_entries.size()-2) + ">, ": "";
+        const auto allowed_entries = _datap->get_allowed_entries();
+        const auto default_value = _default_str.has_value() ? "default: " + *_default_str: "required";
+        const auto implicit_value = _implicit_value.has_value() ? "implicit: \"" + *_implicit_value + "\", ": "";
+        const auto allowed_value = !allowed_entries.empty()? "allowed: <" + allowed_entries.substr(0, allowed_entries.size()-2) + ">, ": "";
         return " [" + allowed_value + implicit_value + default_value + "]";
     }
 
@@ -335,7 +334,7 @@ struct SubcommandEntry {
     template<typename T> operator T& () {
         static_assert(std::is_base_of_v<Args, T>, "Subcommand type must be a derivative of argparse::Args");
 
-        std::shared_ptr<T> res = std::make_shared<T>();
+        auto res = std::make_shared<T>();  // work around circle class dependency
         res->program_name = subcommand_name;
         subargs = res;
         return *(T*)(subargs.get());
@@ -383,7 +382,7 @@ public:
     ///
     /// Returns a reference to the Entry, which will collapse into the requested type in `Entry::operator T()`
     Entry& arg(const std::string& key, const std::string& help) {
-        std::shared_ptr<Entry> entry = std::make_shared<Entry>(Entry::ARG, key, help);
+        auto entry = std::make_shared<Entry>(Entry::ARG, key, help);
         // Increasing _arg_idx, so that arg2 will be arg_2, irregardless of whether it is preceded by other positional arguments
         _arg_idx++;
         _arg_entries.emplace_back(entry);
@@ -399,9 +398,9 @@ public:
     ///
     /// Returns a reference to the Entry, which will collapse into the requested type in `Entry::operator T()`
     Entry& kwarg(const std::string& key, const std::string& help, const std::optional<std::string>& implicit_value = std::nullopt) {
-        std::shared_ptr<Entry> entry = std::make_shared<Entry>(Entry::KWARG, key, help, implicit_value);
+        auto entry = std::make_shared<Entry>(Entry::KWARG, key, help, implicit_value);
         _all_entries.emplace_back(entry);
-        for (const std::string &k: entry->_keys) {
+        for (const std::string& k: entry->_keys) {
             _kwarg_entries[k] = entry;
             if (k.size() == 1 && !implicit_value) {
                 _short_explicit_names.set(k[0]);
@@ -528,13 +527,13 @@ private:
             _parse_param(i, _params[i].substr(start), false, raise_on_error);
         }
     };
-/// @}
+///@}
 public:
     /// parse all parameters and also check for the help_flag which was set in this constructor
     /// Upon error, it will print the error and exit immediately if validation_action is ValidationAction::EXIT_ON_ERROR
-    void parse(int argc, const char* const *argv, const bool &raise_on_error) {
-        for (int i = 1; i < argc; i++) {
-            for (auto &[subcommand, subentry]: _subcommand_entries) {
+    void parse(int argc, const char* const *argv, bool raise_on_error) {
+        for (int i{1}; i < argc; i++) {
+            for (auto& [subcommand, subentry]: _subcommand_entries) {
                 if (subcommand == argv[i]) {
                     subentry->subargs->parse(argc - i, argv + i, raise_on_error);
                     // argc is the number of arguments that should be parsed after the subcommand has finished parsing
@@ -572,29 +571,30 @@ public:
         }
 
         // Parse all the positional arguments, making sure multi_argument positional arguments are processed last to enable arguments afterwards
-        size_t arg_i = 0;
+        size_t arg_i{};
         for (; arg_i < _arg_entries.size() && !_arg_entries[arg_i]->_is_multi_argument; arg_i++) { // iterate over positional arguments until a multi-argument is found
-            if (arg_i < arguments_flat.size())
+            if (arg_i < arguments_flat.size()) {
                 _arg_entries[arg_i]->_convert(arguments_flat[arg_i]);
+            }
         }
 
         if (arg_i == _arg_entries.size() && arg_i < arguments_flat.size()) {
             if (raise_on_error) {
                 throw std::runtime_error("Too many positional values");
             } else {
-                std::cerr << "Too many positional values" << std::endl;
+                cerr << "Too many positional values\n";
                 exit(-1);
             }
         }
 
-        size_t arg_j = 1;
+        size_t arg_j{1};
         for (size_t j_end = _arg_entries.size() - arg_i; arg_j <= j_end; arg_j++) { // iterate from back to front, to ensure non-multi-arguments in the front and back are given preference
             size_t flat_idx = arguments_flat.size() - arg_j;
             if (flat_idx < arguments_flat.size() && flat_idx >= arg_i) {
                 if (_arg_entries[_arg_entries.size() - arg_j]->_is_multi_argument) {
                     std::stringstream s;  // Combine multiple arguments into 1 comma-separated string for parsing
                     copy(&arguments_flat[arg_i],&arguments_flat[flat_idx] + 1, std::ostream_iterator<std::string>(s,","));
-                    std::string value = s.str();
+                    auto value = s.str();
                     value.back() = '\0'; // remove trailing ','
                     _arg_entries[arg_i]->_convert(value);
                 } else {
@@ -604,7 +604,7 @@ public:
         }
 
         // try to apply default values for arguments which have not been set
-        for (const auto &entry: _all_entries) {
+        for (const auto& entry: _all_entries) {
             if (!entry->_value.has_value()) {
                 entry->_apply_default();
             }
@@ -620,34 +620,35 @@ public:
     }
 
     void print() const {
-        for (const auto &entry: _all_entries) {
+        for (const auto& entry: _all_entries) {
             std::string snip = entry->type == Entry::ARG ? "(" + (entry->_help.size() > 10 ? entry->_help.substr(0, 7) + "...": entry->_help) + ")": "";
-            cout << setw(21) << entry->_get_keys() + snip << ": " << (entry->_is_set_by_user? bold(entry->_value.value_or("null")): entry->_value.value_or("null")) << endl;
+            cout << setw(21) << entry->_get_keys() + snip << ": " << (entry->_is_set_by_user? bold(entry->_value.value_or("null")): entry->_value.value_or("null")) << "\n";
         }
 
-        for (const auto &[subcommand, subentry]: _subcommand_entries) {
+        for (const auto& [subcommand, subentry]: _subcommand_entries) {
             if (subentry->subargs->is_valid) {
-                cout << endl << "--- Subcommand: " << subcommand << endl;
+                cout << "\n--- Subcommand: " << subcommand << "\n";
                 subentry->subargs->print();
             }
         }
+        cout.flush();
     }
 
     virtual int run() {return 0;}       // For automatically running subcommands
-    int run_subcommands() {
-        for (const auto &[subcommand, subentry]: _subcommand_entries) {
+    auto run_subcommands() {
+        for (const auto& [subcommand, subentry]: _subcommand_entries) {
             if (subentry->subargs->is_valid) {
                 return subentry->subargs->run();
             }
         }
 
-        std::cerr << "No subcommand provided" << std::endl;
+        cerr << "No subcommand provided\n";
         help();
         return -1;
     }
 };
 
-template <typename T> T parse(int argc, const char* const *argv, const bool &raise_on_error=false) {
+template <typename T> T parse(int argc, const char* const *argv, bool raise_on_error = false) {
     T args = T();
     args.parse(argc, argv, raise_on_error);
     return args;
