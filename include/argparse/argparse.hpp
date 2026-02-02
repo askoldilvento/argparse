@@ -27,6 +27,7 @@
 #include <algorithm>           // for max, transform, copy, min
 #include <bitset>              // for short flag names look-up table
 #include <filesystem>          // for getting program_name from path
+#include <iostream>            // for cout, cerr
 #include <iterator>            // for ostream_iterator
 #include <locale>              // for std::wstring_convert
 #include <map>                 // for subcommand entries which better to be ordred
