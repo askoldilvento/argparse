@@ -232,7 +232,7 @@ struct Entry {
             type(type),
             keys_(split(key)),
             help(std::move(help)),
-            implicit_value_(std::move(implicit_value)) {
+            _implicit_value(std::move(implicit_value)) {
     }
 
     /// Allow both string inputs and direct-type inputs.
@@ -274,9 +274,9 @@ private:
     std::vector<std::string> keys_;
     std::string help;
     std::optional<std::string> value_;
-    std::optional<std::string> implicit_value_;
+    std::optional<std::string> _implicit_value;
     std::optional<std::string> default_str_;
-    std::string error;
+    std::string _error;
     std::unique_ptr<ConvertBase> datap;
     std::unique_ptr<ConvertBase> data_default;
     bool _is_multi_argument = false;
@@ -294,9 +294,9 @@ private:
             this->value_ = value;
             datap->convert(value);
         } catch (const std::invalid_argument &e) {
-            error = "Invalid argument, could not convert \"" + value + "\" for " + _get_keys() + " (" + help + ")";
+            _error = "Invalid argument, could not convert \"" + value + "\" for " + _get_keys() + " (" + help + ")";
         } catch (const std::runtime_error &e) {
-            error = "Invalid argument \"" + value + "\" for " + _get_keys() + " (" + help + "). Error: " + e.what();
+            _error = "Invalid argument \"" + value + "\" for " + _get_keys() + " (" + help + "). Error: " + e.what();
         }
     }
 
@@ -308,14 +308,14 @@ private:
         } else if (default_str_.has_value()) {   // in cases where a string is provided to the `set_default` function
             _convert(default_str_.value());
         } else {
-            error = "Argument missing: " + _get_keys() + " (" + help + ")";
+            _error = "Argument missing: " + _get_keys() + " (" + help + ")";
         }
     }
 
     [[nodiscard]] std::string info() const {
         const std::string allowed_entries = datap->get_allowed_entries();
         const std::string default_value = default_str_.has_value() ? "default: " + *default_str_: "required";
-        const std::string implicit_value = implicit_value_.has_value() ? "implicit: \"" + *implicit_value_ + "\", ": "";
+        const std::string implicit_value = _implicit_value.has_value() ? "implicit: \"" + *_implicit_value + "\", ": "";
         const std::string allowed_value = !allowed_entries.empty()? "allowed: <" + allowed_entries.substr(0, allowed_entries.size()-2) + ">, ": "";
         return " [" + allowed_value + implicit_value + default_value + "]";
     }
@@ -345,12 +345,12 @@ struct SubcommandEntry {
 class Args {
 private:
     size_t _arg_idx = 0;
-    std::vector<std::string> params;
+    std::vector<std::string> _params;
     std::vector<std::shared_ptr<Entry>> all_entries;
-    std::map<std::string, std::shared_ptr<Entry>> kwarg_entries;
+    std::map<std::string, std::shared_ptr<Entry>> _kwarg_entries;
     std::vector<std::shared_ptr<Entry>> arg_entries;
     std::map<std::string, std::shared_ptr<SubcommandEntry>> subcommand_entries;
-    std::bitset<256> short_explicit_names;
+    std::bitset<256> _short_explicit_names;
     bool has_options() {
         return std::find_if(all_entries.begin(), all_entries.end(), [](auto e) { return e->type != Entry::ARG; }) != all_entries.end();
     };
@@ -396,9 +396,9 @@ public:
         std::shared_ptr<Entry> entry = std::make_shared<Entry>(Entry::KWARG, key, help, implicit_value);
         all_entries.emplace_back(entry);
         for (const std::string &k: entry->keys_) {
-            kwarg_entries[k] = entry;
+            _kwarg_entries[k] = entry;
             if (k.size() == 1 && !implicit_value) {
-                short_explicit_names.set(k[0]);
+                _short_explicit_names.set(k[0]);
             }
         }
         return *entry;
@@ -460,112 +460,108 @@ public:
 
     void validate(const bool &raise_on_error) {
         for (const auto &entry: all_entries) {
-            if (!entry->error.empty()) {
+            if (!entry->_error.empty()) {
                 if (raise_on_error) {
-                    throw std::runtime_error(entry->error);
+                    throw std::runtime_error(entry->_error);
                 } else {
-                    std::cerr << entry->error << std::endl;
+                    std::cerr << entry->_error << std::endl;
                     exit(-1);
                 }
             }
         }
     }
 
-    // void _add_param(size_t &i, size_t start, bool raise_on_error) {
-    //     if (auto eq_idx{_params[i].find('=')}; eq_idx != std::string::npos) { // key/value from = notation
-    //         _parse_param(i, _params[i].substr(start, eq_idx - start), false, raise_on_error, _params[i].substr(eq_idx + 1));
-    void parse(int argc, const char* const *argv, const bool &raise_on_error) {
-        auto parse_subcommands = [&]() -> int {
-            for (int i = 1; i < argc; i++) {
-                for (auto &[subcommand, subentry]: subcommand_entries) {
-                if (subcommand == argv[i]) {
-                    subentry->subargs->parse(argc - i, argv + i, raise_on_error);
-                        return i;
-                }
+private:
+/// @{ prase helpers
+    /// check for number to not accidentally mark negative numbers as non-parameter
+    auto _is_value(size_t i) const {
+        return _params.size() > i && (_params[i][0] != '-' || (_params[i].size() > 1 && std::isdigit(_params[i][1])));
+    };
+
+    void _parse_multi_argument(size_t &i, Entry& entry, std::string value) {
+        if (entry._is_multi_argument) {
+            while (_is_value(i + 1)) {
+                value += "," + _params[++i];
             }
         }
-            return argc;
-        };
-        argc = parse_subcommands();   // argc_ is the number of arguments that should be parsed after the subcommand has finished parsing
+        entry._convert(value);
+    };
 
-        program_name = std::filesystem::path(argv[0]).stem().string();
-        params = std::vector<std::string>(argv + 1, argv + argc);
-
-        std::string help_keys = kwarg_entries.count("h") ? "?,help": "?,h,help";
-        bool& _help = flag(help_keys, "print help");
-
-        auto is_value = [&](const size_t &i) -> bool {
-            return params.size() > i && (params[i][0] != '-' || (params[i].size() > 1 && std::isdigit(params[i][1])));  // check for number to not accidentally mark negative numbers as non-parameter
-        };
-
-        auto parse_multi_argument = [&](size_t &i, Entry& entry, std::string value) {
-            if (entry._is_multi_argument) {
-                while (is_value(i + 1))
-                    value += "," + params[++i];
-            }
-            entry._convert(value);
-        };
-
-        auto parse_param = [&](size_t &i, const std::string &key, const bool is_short, const std::optional<std::string> &equal_value=std::nullopt) {
-                auto itt = kwarg_entries.find(key);
-                if (itt != kwarg_entries.end()) {
-                auto& entry = itt->second;
-                if (equal_value.has_value()) {
-                    entry->_convert(equal_value.value());
-                    } else if (entry->implicit_value_.has_value()) {
-                        entry->_convert(*entry->implicit_value_);
-                } else if (!is_short) { // short values are not allowed to look ahead for the next parameter
-                    if (is_value(i + 1)) {
-                        parse_multi_argument(i, *entry, params[++i]);
-                    } else if (entry->_is_multi_argument) {
-                        entry->_convert("");    // for multiargument parameters, return an empty vector when not passing any more values
-                    } else {
-                        entry->error = "No value provided for: " + key;
-                    }
+    void _parse_param(size_t &i, const std::string& key, bool is_short, bool raise_on_error, const std::optional<std::string> &equal_value = std::nullopt) {
+        auto itt = _kwarg_entries.find(key);
+        if (itt != _kwarg_entries.end()) {
+            auto& entry = itt->second;
+            if (equal_value.has_value()) {
+                entry->_convert(equal_value.value());
+            } else if (entry->_implicit_value.has_value()) {
+                entry->_convert(*entry->_implicit_value);
+            } else if (!is_short) { // short values are not allowed to look ahead for the next parameter
+                if (_is_value(i + 1)) {
+                    _parse_multi_argument(i, *entry, _params[++i]);
+                } else if (entry->_is_multi_argument) {
+                    entry->_convert("");    // for multiargument parameters, return an empty vector when not passing any more values
                 } else {
-                    entry->error = "No value provided for: " + key;
+                    entry->_error = "No value provided for: " + key;
                 }
             } else {
-                if (raise_on_error) {
-                    throw std::runtime_error("unrecognised commandline argument: " + key);
-                } else {
-                    std::cerr << "unrecognised commandline argument: " << key << "\n";
-                }
+                entry->_error = "No value provided for: " + key;
             }
-        };
-
-        auto add_param = [&](size_t &i, const size_t &start) {
-            size_t eq_idx = params[i].find('=');  // check if value was passed using the '=' sign
-            if (eq_idx != std::string::npos) { // key/value from = notation
-                std::string key = params[i].substr(start, eq_idx - start);
-                std::string value = params[i].substr(eq_idx + 1);
-                parse_param(i, key, false, value);
         } else {
-                std::string key = std::string(params[i].substr(start));
-                parse_param(i, key, false);
+            if (raise_on_error) {
+                throw std::runtime_error("unrecognised commandline argument: " + key);
+            } else {
+                cerr << "unrecognised commandline argument: " << key << "\n";
+            }
         }
     };
 
+    void _add_param(size_t &i, size_t start, bool raise_on_error) {
+        if (auto eq_idx{_params[i].find('=')}; eq_idx != std::string::npos) { // key/value from = notation
+            _parse_param(i, _params[i].substr(start, eq_idx - start), false, raise_on_error, _params[i].substr(eq_idx + 1));
+        } else {
+            _parse_param(i, _params[i].substr(start), false, raise_on_error);
+        }
+    };
+/// @}
+public:
+    /// parse all parameters and also check for the help_flag which was set in this constructor
+    /// Upon error, it will print the error and exit immediately if validation_action is ValidationAction::EXIT_ON_ERROR
+    void parse(int argc, const char* const *argv, const bool &raise_on_error) {
+        for (int i = 1; i < argc; i++) {
+            for (auto &[subcommand, subentry]: subcommand_entries) {
+                if (subcommand == argv[i]) {
+                    subentry->subargs->parse(argc - i, argv + i, raise_on_error);
+                    // argc is the number of arguments that should be parsed after the subcommand has finished parsing
+                    argc = i;
+                    break;
+                }
+            }
+        }
+
+        program_name = std::filesystem::path(argv[0]).stem().string();
+        _params = std::vector<std::string>(argv + 1, argv + argc);
+        bool& help_flag = flag(_kwarg_entries.count("h") ? "?,help": "?,h,help", "print help");
+
         std::vector<std::string> arguments_flat;
-        for (size_t i = 0; i < params.size(); i++) {
-            if (!is_value(i)) {
-                if (params[i].size() > 1 && params[i][1] == '-') {  // long --
-                    add_param(i, 2);
+        for (size_t i = 0; i < _params.size(); i++) {
+            if (!_is_value(i)) {
+                if (_params[i].size() > 1 && _params[i][1] == '-') {  // long --
+                    _add_param(i, 2, raise_on_error);
                 } else { // short -
-                    const size_t j_end = std::min(params[i].size(), params[i].find('=')) - 1;
+                    const size_t j_end = std::min(_params[i].size(), _params[i].find('=')) - 1;
                     for (size_t j = 1; j < j_end; j++) { // add possible other flags
-                        const std::string key = std::string(1, params[i][j]);
-                        if (short_explicit_names[params[i][j]]) {
-                            parse_multi_argument(i, *kwarg_entries[key], params[i].substr(j + 1));
+                        const std::string key = std::string(1, _params[i][j]);
+                        if (_short_explicit_names[_params[i][j]]) {
+                            _parse_multi_argument(i, *_kwarg_entries[key], _params[i].substr(j + 1));
                             goto skip;
                         }
-                        parse_param(i, key, true);
+                        _parse_param(i, key, true, raise_on_error);
                     }
-                    add_param(i, j_end);
+                    _add_param(i, j_end, raise_on_error);
                     skip:;
                     }
             } else {
-                arguments_flat.emplace_back(params[i]);
+                arguments_flat.emplace_back(_params[i]);
             }
         }
 
@@ -608,7 +604,7 @@ public:
             }
         }
 
-        if (_help) {
+        if (help_flag) {
             help();
             exit(0);
         }
