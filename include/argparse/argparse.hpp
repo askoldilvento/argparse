@@ -26,22 +26,12 @@
 // DEALINGS IN THE SOFTWARE.
 #include <algorithm>           // for max, transform, copy, min
 #include <bitset>              // for short flag names look-up table
-#include <cctype>              // for isdigit, tolower
-#include <codecvt>             // for std::wstring_convert
-#include <cstdlib>             // for size_t, exit
 #include <filesystem>          // for getting program_name from path
-#include <iomanip>             // for operator<<, setw
-#include <iostream>            // for operator<<, basic_ostream, ostream
 #include <iterator>            // for ostream_iterator
 #include <locale>              // for std::wstring_convert
-#include <map>                 // for operator!=, map, _Rb_tree_iterator
-#include <memory>              // for allocator, shared_ptr, __shared_ptr_ac...
+#include <map>                 // for subcommand entries which better to be ordred
 #include <optional>            // for optional, nullopt
-#include <stdexcept>           // for runtime_error, invalid_argument
-#include <sstream>
-#include <string>              // for string, operator+, basic_string, char_...
-#include <type_traits>         // for declval, false_type, true_type, is_enum
-#include <utility>             // for move, pair
+#include <unordered_map>       // for kwargs storages
 #include <vector>              // for vector
 
 // for enum_entries
@@ -118,8 +108,9 @@ auto inline split(const std::string& str) {
     std::stringstream ss(str);
     std::string key;
     while (std::getline(ss, key, ',')) {
-        if (!key.empty() && key.back() == '\0')
+        if (key.size() && key.back() == '\0') {
             key.pop_back(); // last variables contain a '\0', which is unexpected when comparing to raw string, e.g. value == "test" will fail when the last character is '\0'. Therefore we can remove it
+        }
         splits.emplace_back(std::move(key));
     }
     return splits;
@@ -203,9 +194,7 @@ template <typename T> struct ConvertType: public ConvertBase {
     void set_default(const std::unique_ptr<ConvertBase>& default_value, const std::string& default_string) override {
         if (get_type_id() == default_value->get_type_id()) {   // When the types do not match exactly. resort to string conversion
             data = ((ConvertType<T>*)(default_value.get()))->data;
-        } else {
-            data = get<T>(default_string);
-        }
+        } else data = get<T>(default_string);
     }
 
     [[nodiscard]] size_t get_type_id() const override {
@@ -286,8 +275,9 @@ private:
 
     [[nodiscard]] auto _get_keys() const {
         std::stringstream ss;
-        for (size_t i{}; i < _keys.size(); i++)
+        for (size_t i{}; i < _keys.size(); i++) {
             ss << (i? ",": "") << (type == ARG? "": (_keys[i].size() > 1 ? "--": "-")) + _keys[i];
+        }
         return ss.str();
     }
 
@@ -304,14 +294,12 @@ private:
 
     void _apply_default() {
         _is_set_by_user = false;
-        if (_data_default != nullptr) {
+        if (_data_default) {
             _value = *_default_str;  // for printing
             _datap->set_default(_data_default, *_default_str);
         } else if (_default_str) {  // in cases where a string is provided to the `set_default` function
             _convert(_default_str.value());
-        } else {
-            _error = "Argument missing: " + _get_keys() + " (" + _help + ")";
-        }
+        } else _error = "Argument missing: " + _get_keys() + " (" + _help + ")";
     }
 
     [[nodiscard]] std::string _info() const {
@@ -352,17 +340,18 @@ private:
     size_t _arg_idx{};
     std::vector<std::string> _params;
     std::vector<std::shared_ptr<Entry>> _all_entries;
-    std::map<std::string, std::shared_ptr<Entry>> _kwarg_entries;
+    std::unordered_map<std::string, std::shared_ptr<Entry>> _kwarg_entries;
     std::vector<std::shared_ptr<Entry>> _arg_entries;
     std::map<std::string, std::shared_ptr<SubcommandEntry>> _subcommand_entries;
     std::bitset<256> _short_explicit_names;
-    bool _has_options() {
+    bool _has_options() const {
         return std::find_if(_all_entries.begin(), _all_entries.end(), [](auto e) { return e->type != Entry::ARG; }) != _all_entries.end();
     };
 
 public:
     std::string program_name;
     bool is_valid{};
+    bool raise_on_error{};
 
     virtual ~Args() = default;
 
@@ -402,9 +391,7 @@ public:
         _all_entries.emplace_back(entry);
         for (const std::string& k: entry->_keys) {
             _kwarg_entries[k] = entry;
-            if (k.size() == 1 && !implicit_value) {
-                _short_explicit_names.set(k[0]);
-            }
+            if (k.size() == 1 && !implicit_value) _short_explicit_names.set(k[0]);
         }
         return *entry;
     }
@@ -435,10 +422,9 @@ public:
     virtual void help() {
         welcome();
         cout << "Usage: " << program_name << " ";
-        for (const auto& entry: _arg_entries)
-            cout << entry->_keys[0] << ' ';
+        for (const auto& entry: _arg_entries) cout << entry->_keys[0] << ' ';
         if (_has_options()) cout << " [options...]";
-        if (!_subcommand_entries.empty()) {
+        if (_subcommand_entries.size()) {
             cout << " [SUBCOMMAND: ";
             for (const auto& [subcommand, subentry]: _subcommand_entries) {
                 cout << subcommand << ", ";
@@ -464,77 +450,52 @@ public:
         cout.flush();
     }
 
-    void validate(bool raise_on_error) {
-        for (const auto& entry: _all_entries) {
-            if (!entry->_error.empty()) {
-                if (raise_on_error) {
-                    throw std::runtime_error(entry->_error);
-                } else {
-                    cerr << entry->_error << "\n";
-                    exit(-1);
-                }
-            }
-        }
-    }
 private:
 ///@{ prase helpers
+    void _throw_or_exit(const std::string& error) const {
+        if (raise_on_error) throw std::runtime_error(error);
+        cerr << error << "\n";
+        exit(-1);
+    }
+
     /// check for number to not accidentally mark negative numbers as non-parameter
     auto _is_value(size_t i) const {
         return _params.size() > i && (_params[i][0] != '-' || (_params[i].size() > 1 && std::isdigit(_params[i][1])));
     };
 
-    void _parse_multi_argument(size_t &i, Entry& entry, std::string value) {
-        if (entry._is_multi_argument) {
-            while (_is_value(i + 1)) {
-                value += "," + _params[++i];
-            }
-        }
+    void _parse_multi_argument(size_t &i, Entry& entry, std::string value) const {
+        if (entry._is_multi_argument) while (_is_value(i + 1)) value += "," + _params[++i];
         entry._convert(value);
     };
 
-    void _parse_param(size_t &i, const std::string& key, bool is_short, bool raise_on_error, const std::optional<std::string> &equal_value = std::nullopt) {
-        if (auto itt{_kwarg_entries.find(key)}; itt != _kwarg_entries.end()) {
-            auto& entry = itt->second;
-            if (equal_value) {
-                entry->_convert(equal_value.value());
-            } else if (entry->_implicit_value) {
-                entry->_convert(*entry->_implicit_value);
-            } else if (!is_short) { // short values are not allowed to look ahead for the next parameter
-                if (_is_value(i + 1)) {
-                    _parse_multi_argument(i, *entry, _params[++i]);
-                } else if (entry->_is_multi_argument) {
-                    entry->_convert("");    // for multiargument parameters, return an empty vector when not passing any more values
-                } else {
-                    entry->_error = "No value provided for: " + key;
-                }
-            } else {
-                entry->_error = "No value provided for: " + key;
-            }
-        } else {
-            if (raise_on_error) {
-                throw std::runtime_error("unrecognised commandline argument: " + key);
-            } else {
-                cerr << "unrecognised commandline argument: " << key << "\n";
-            }
-        }
+    void _parse_param(size_t &i, const std::string& key, bool is_short, const std::optional<std::string> &equal_value = std::nullopt) const {
+        auto itt{_kwarg_entries.find(key)};
+        if (itt == _kwarg_entries.end()) _throw_or_exit("Unrecognised commandline argument: " + key);
+        auto& entry = *itt->second;
+        if (equal_value) entry._convert(equal_value.value());
+        else if (entry._implicit_value) entry._convert(*entry._implicit_value);
+        else if (!is_short) { // short values are not allowed to look ahead for the next parameter
+            if (_is_value(i + 1)) _parse_multi_argument(i, entry, _params[++i]);
+            else if (entry._is_multi_argument) {
+                entry._convert("");    // for multiargument parameters, return an empty vector when not passing any more values
+            } else entry._error = "No value provided for: " + key;
+        } else entry._error = "No value provided for: " + key;
     };
 
-    void _add_param(size_t &i, size_t start, bool raise_on_error) {
-        if (auto eq_idx{_params[i].find('=')}; eq_idx != std::string::npos) { // key/value from = notation
-            _parse_param(i, _params[i].substr(start, eq_idx - start), false, raise_on_error, _params[i].substr(eq_idx + 1));
-        } else {
-            _parse_param(i, _params[i].substr(start), false, raise_on_error);
-        }
+    void _add_param(size_t &i, size_t start) const {
+        if (auto eq_idx{_params[i].find('=')}; eq_idx != std::string::npos) {  // key/value from = notation
+            _parse_param(i, _params[i].substr(start, eq_idx - start), false, _params[i].substr(eq_idx + 1));
+        } else _parse_param(i, _params[i].substr(start), false);
     };
 ///@}
 public:
     /// parse all parameters and also check for the help_flag which was set in this constructor
-    /// Upon error, it will print the error and exit immediately if validation_action is ValidationAction::EXIT_ON_ERROR
-    void parse(int argc, const char* const *argv, bool raise_on_error) {
+    /// Upon error, it will print the error and exit immediately or throw exception if raise_on_error is set
+    void parse(int argc, const char* const *argv) {
         for (int i{1}; i < argc; i++) {
             for (auto& [subcommand, subentry]: _subcommand_entries) {
                 if (subcommand == argv[i]) {
-                    subentry->subargs->parse(argc - i, argv + i, raise_on_error);
+                    subentry->subargs->parse(argc - i, argv + i);
                     // argc is the number of arguments that should be parsed after the subcommand has finished parsing
                     argc = i;
                     break;
@@ -550,7 +511,7 @@ public:
         for (size_t i{}; i < _params.size(); i++) {
             if (!_is_value(i)) {
                 if (_params[i].size() > 1 && _params[i][1] == '-') {  // long --
-                    _add_param(i, 2, raise_on_error);
+                    _add_param(i, 2);
                 } else { // short -
                     const auto j_end = std::min(_params[i].size(), _params[i].find('=')) - 1;
                     for (size_t j{1}; j < j_end; j++) { // add possible other flags
@@ -559,32 +520,21 @@ public:
                             _parse_multi_argument(i, *_kwarg_entries[key], _params[i].substr(j + 1));
                             goto skip;
                         }
-                        _parse_param(i, key, true, raise_on_error);
+                        _parse_param(i, key, true);
                     }
-                    _add_param(i, j_end, raise_on_error);
+                    _add_param(i, j_end);
                     skip:;
                     }
-            } else {
-                arguments_flat.emplace_back(_params[i]);
-            }
+            } else arguments_flat.emplace_back(_params[i]);
         }
 
         // Parse all the positional arguments, making sure multi_argument positional arguments are processed last to enable arguments afterwards
         size_t arg_i{};
         for (; arg_i < _arg_entries.size() && !_arg_entries[arg_i]->_is_multi_argument; arg_i++) { // iterate over positional arguments until a multi-argument is found
-            if (arg_i < arguments_flat.size()) {
-                _arg_entries[arg_i]->_convert(arguments_flat[arg_i]);
-            }
+            if (arg_i < arguments_flat.size()) _arg_entries[arg_i]->_convert(arguments_flat[arg_i]);
         }
 
-        if (arg_i == _arg_entries.size() && arg_i < arguments_flat.size()) {
-            if (raise_on_error) {
-                throw std::runtime_error("Too many positional values");
-            } else {
-                cerr << "Too many positional values\n";
-                exit(-1);
-            }
-        }
+        if (arg_i == _arg_entries.size() && arg_i < arguments_flat.size()) _throw_or_exit("Too many positional values");
 
         size_t arg_j{1};
         for (auto j_end = _arg_entries.size() - arg_i; arg_j <= j_end; arg_j++) { // iterate from back to front, to ensure non-multi-arguments in the front and back are given preference
@@ -596,25 +546,19 @@ public:
                     auto value{s.str()};
                     value.back() = '\0'; // remove trailing ','
                     _arg_entries[arg_i]->_convert(value);
-                } else {
-                    _arg_entries[_arg_entries.size() - arg_j]->_convert(arguments_flat[flat_idx]);
-                }
+                } else _arg_entries[_arg_entries.size() - arg_j]->_convert(arguments_flat[flat_idx]);
             }
         }
 
         // try to apply default values for arguments which have not been set
-        for (const auto& entry: _all_entries) {
-            if (!entry->_value) {
-                entry->_apply_default();
-            }
-        }
+        for (const auto& entry: _all_entries) if (!entry->_value) entry->_apply_default();
 
         if (help_flag) {
             help();
             exit(0);
         }
 
-        validate(raise_on_error);
+        for (const auto& entry: _all_entries) if (entry->_error.size()) _throw_or_exit(entry->_error);
         is_valid = true;
     }
 
@@ -653,7 +597,8 @@ public:
 template <typename T>
 auto parse(int argc, const char* const *argv, bool raise_on_error = false) {
     T args = T();
-    args.parse(argc, argv, raise_on_error);
+    args.raise_on_error = raise_on_error;
+    args.parse(argc, argv);
     return args;
 }
 }  // namespace argparse

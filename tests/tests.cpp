@@ -360,7 +360,7 @@ void TEST_ADJOINT() {
         auto args = argparse::parse<Args>(argc, argv, true);
     } catch (const std::runtime_error &e) {
         std::cout << std::string(e.what()) << '\n';
-        assert(std::string(e.what()) ==  "unrecognised commandline argument: l");
+        assert(std::string(e.what()) ==  "Unrecognised commandline argument: l");
         is_thrown = true;
     }
     assert(is_thrown && "Must throw");
