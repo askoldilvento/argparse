@@ -169,8 +169,8 @@ template<typename T> inline T get(const std::string& v) { // remaining types
             if (to_lower(name) == lower_str)
                 return value;
         }
-        std::string error = "enum is only accepting [";
-        for (size_t i = 0; i < enum_entries.size(); i++)
+        std::string error{"enum is only accepting ["};
+        for (size_t i{}; i < enum_entries.size(); i++)
             error += (i == 0? "": ", ") + to_lower(enum_entries[i].second);
         error += "]";
         throw std::runtime_error(error);
@@ -201,7 +201,7 @@ template <typename T> struct ConvertType: public ConvertBase {
     }
 
     void set_default(const std::unique_ptr<ConvertBase>& default_value, const std::string& default_string) override {
-        if (this->get_type_id() == default_value->get_type_id()) {   // When the types do not match exactly. resort to string conversion
+        if (get_type_id() == default_value->get_type_id()) {   // When the types do not match exactly. resort to string conversion
             data = ((ConvertType<T>*)(default_value.get()))->data;
         } else {
             data = get<T>(default_string);
@@ -239,7 +239,7 @@ struct Entry {
     /// Where a string-input will be converted like it would when using the commandline,
     /// and the direct approach is to simply use the value provided.
     template <typename T> Entry& set_default(const T& default_value) {
-        this->_default_str = toString(default_value);
+        _default_str = toString(default_value);
         if constexpr (!(std::is_array<T>::value || std::is_same<typename std::remove_all_extents<T>::type, char>::value)) {
             _data_default = std::make_unique<ConvertType<T>>(default_value);
         }
@@ -255,7 +255,7 @@ struct Entry {
     template <typename T> operator T&() {
         // Automatically set the default to nullptr for pointer types and empty for optional types
         if constexpr (is_optional<T>::value || std::is_pointer<T>::value || is_shared_ptr<T>::value) {
-            if (!_default_str.has_value()) {
+            if (!_default_str) {
                 _default_str = "none";
                 if constexpr(is_optional<T>::value) {
                     _data_default = std::make_unique<ConvertType<T>> (T{std::nullopt});
@@ -286,14 +286,14 @@ private:
 
     [[nodiscard]] auto _get_keys() const {
         std::stringstream ss;
-        for (size_t i = 0; i < _keys.size(); i++)
+        for (size_t i{}; i < _keys.size(); i++)
             ss << (i? ",": "") << (type == ARG? "": (_keys[i].size() > 1 ? "--": "-")) + _keys[i];
         return ss.str();
     }
 
     void _convert(const std::string& value) {
         try {
-            this->_value = value;
+            _value = value;
             _datap->convert(value);
         } catch (const std::invalid_argument &e) {
             _error = "Invalid argument, could not convert \"" + value + "\" for " + _get_keys() + " (" + _help + ")";
@@ -305,9 +305,9 @@ private:
     void _apply_default() {
         _is_set_by_user = false;
         if (_data_default != nullptr) {
-            _value = *_default_str; // for printing
+            _value = *_default_str;  // for printing
             _datap->set_default(_data_default, *_default_str);
-        } else if (_default_str.has_value()) {   // in cases where a string is provided to the `set_default` function
+        } else if (_default_str) {  // in cases where a string is provided to the `set_default` function
             _convert(_default_str.value());
         } else {
             _error = "Argument missing: " + _get_keys() + " (" + _help + ")";
@@ -316,8 +316,8 @@ private:
 
     [[nodiscard]] std::string _info() const {
         const auto allowed_entries = _datap->get_allowed_entries();
-        const auto default_value = _default_str.has_value() ? "default: " + *_default_str: "required";
-        const auto implicit_value = _implicit_value.has_value() ? "implicit: \"" + *_implicit_value + "\", ": "";
+        const auto default_value = _default_str ? "default: " + *_default_str: "required";
+        const auto implicit_value = _implicit_value ? "implicit: \"" + *_implicit_value + "\", ": "";
         const auto allowed_value = !allowed_entries.empty()? "allowed: <" + allowed_entries.substr(0, allowed_entries.size()-2) + ">, ": "";
         return " [" + allowed_value + implicit_value + default_value + "]";
     }
@@ -334,7 +334,7 @@ struct SubcommandEntry {
     template<typename T> operator T& () {
         static_assert(std::is_base_of_v<Args, T>, "Subcommand type must be a derivative of argparse::Args");
 
-        auto res = std::make_shared<T>();  // work around circle class dependency
+        auto res{std::make_shared<T>()};  // work around circle class dependency
         res->program_name = subcommand_name;
         subargs = res;
         return *(T*)(subargs.get());
@@ -382,7 +382,7 @@ public:
     ///
     /// Returns a reference to the Entry, which will collapse into the requested type in `Entry::operator T()`
     Entry& arg(const std::string& key, const std::string& help) {
-        auto entry = std::make_shared<Entry>(Entry::ARG, key, help);
+        auto entry{std::make_shared<Entry>(Entry::ARG, key, help)};
         // Increasing _arg_idx, so that arg2 will be arg_2, irregardless of whether it is preceded by other positional arguments
         _arg_idx++;
         _arg_entries.emplace_back(entry);
@@ -398,7 +398,7 @@ public:
     ///
     /// Returns a reference to the Entry, which will collapse into the requested type in `Entry::operator T()`
     Entry& kwarg(const std::string& key, const std::string& help, const std::optional<std::string>& implicit_value = std::nullopt) {
-        auto entry = std::make_shared<Entry>(Entry::KWARG, key, help, implicit_value);
+        auto entry{std::make_shared<Entry>(Entry::KWARG, key, help, implicit_value)};
         _all_entries.emplace_back(entry);
         for (const std::string& k: entry->_keys) {
             _kwarg_entries[k] = entry;
@@ -426,12 +426,12 @@ public:
     ///  Returns a reference to the Entry, which will collapse into the requested type in `Entry::operator T()`
     ///  Expected type *Must* be an std::shared_ptr of derivative of the argparse::Args class
     SubcommandEntry &subcommand(const std::string& command) {
-        std::shared_ptr<SubcommandEntry> entry = std::make_shared<SubcommandEntry>(command);
-        _subcommand_entries[command] = entry;
-        return *entry;
+        return *(_subcommand_entries[command] = std::make_shared<SubcommandEntry>(command));
     }
 
-    virtual void welcome() {}       // Allow to overwrite the `welcome` function to add a welcome-message to the help output
+    /// Allow to overwrite the `welcome` function to add a welcome-message to the help output
+    virtual void welcome() {
+    }
     virtual void help() {
         welcome();
         cout << "Usage: " << program_name << " ";
@@ -493,12 +493,11 @@ private:
     };
 
     void _parse_param(size_t &i, const std::string& key, bool is_short, bool raise_on_error, const std::optional<std::string> &equal_value = std::nullopt) {
-        auto itt = _kwarg_entries.find(key);
-        if (itt != _kwarg_entries.end()) {
+        if (auto itt{_kwarg_entries.find(key)}; itt != _kwarg_entries.end()) {
             auto& entry = itt->second;
-            if (equal_value.has_value()) {
+            if (equal_value) {
                 entry->_convert(equal_value.value());
-            } else if (entry->_implicit_value.has_value()) {
+            } else if (entry->_implicit_value) {
                 entry->_convert(*entry->_implicit_value);
             } else if (!is_short) { // short values are not allowed to look ahead for the next parameter
                 if (_is_value(i + 1)) {
@@ -548,14 +547,14 @@ public:
         bool& help_flag = flag(_kwarg_entries.count("h") ? "?,help": "?,h,help", "print help");
 
         std::vector<std::string> arguments_flat;
-        for (size_t i = 0; i < _params.size(); i++) {
+        for (size_t i{}; i < _params.size(); i++) {
             if (!_is_value(i)) {
                 if (_params[i].size() > 1 && _params[i][1] == '-') {  // long --
                     _add_param(i, 2, raise_on_error);
                 } else { // short -
-                    const size_t j_end = std::min(_params[i].size(), _params[i].find('=')) - 1;
-                    for (size_t j = 1; j < j_end; j++) { // add possible other flags
-                        const std::string key = std::string(1, _params[i][j]);
+                    const auto j_end = std::min(_params[i].size(), _params[i].find('=')) - 1;
+                    for (size_t j{1}; j < j_end; j++) { // add possible other flags
+                        const auto key{std::string(1, _params[i][j])};
                         if (_short_explicit_names[_params[i][j]]) {
                             _parse_multi_argument(i, *_kwarg_entries[key], _params[i].substr(j + 1));
                             goto skip;
@@ -588,13 +587,13 @@ public:
         }
 
         size_t arg_j{1};
-        for (size_t j_end = _arg_entries.size() - arg_i; arg_j <= j_end; arg_j++) { // iterate from back to front, to ensure non-multi-arguments in the front and back are given preference
-            size_t flat_idx = arguments_flat.size() - arg_j;
+        for (auto j_end = _arg_entries.size() - arg_i; arg_j <= j_end; arg_j++) { // iterate from back to front, to ensure non-multi-arguments in the front and back are given preference
+            auto flat_idx = arguments_flat.size() - arg_j;
             if (flat_idx < arguments_flat.size() && flat_idx >= arg_i) {
                 if (_arg_entries[_arg_entries.size() - arg_j]->_is_multi_argument) {
                     std::stringstream s;  // Combine multiple arguments into 1 comma-separated string for parsing
                     copy(&arguments_flat[arg_i],&arguments_flat[flat_idx] + 1, std::ostream_iterator<std::string>(s,","));
-                    auto value = s.str();
+                    auto value{s.str()};
                     value.back() = '\0'; // remove trailing ','
                     _arg_entries[arg_i]->_convert(value);
                 } else {
@@ -605,7 +604,7 @@ public:
 
         // try to apply default values for arguments which have not been set
         for (const auto& entry: _all_entries) {
-            if (!entry->_value.has_value()) {
+            if (!entry->_value) {
                 entry->_apply_default();
             }
         }
@@ -633,8 +632,11 @@ public:
         }
         cout.flush();
     }
+    /// For automatically running subcommands
+    virtual int run() {
+        return 0;
+    }
 
-    virtual int run() {return 0;}       // For automatically running subcommands
     auto run_subcommands() {
         for (const auto& [subcommand, subentry]: _subcommand_entries) {
             if (subentry->subargs->is_valid) {
@@ -648,7 +650,8 @@ public:
     }
 };
 
-template <typename T> T parse(int argc, const char* const *argv, bool raise_on_error = false) {
+template <typename T>
+auto parse(int argc, const char* const *argv, bool raise_on_error = false) {
     T args = T();
     args.parse(argc, argv, raise_on_error);
     return args;
